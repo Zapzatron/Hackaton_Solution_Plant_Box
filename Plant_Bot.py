@@ -7,7 +7,7 @@ import pymysql.cursors
 import traceback
 from telebot import apihelper
 import pytz as ptz
-from natasha import Doc, MorphVocab, Segmenter, NewsMorphTagger, NewsEmbedding
+# from natasha import Doc, MorphVocab, Segmenter, NewsMorphTagger, NewsEmbedding
 from datetime import datetime as dt
 from data import config
 
