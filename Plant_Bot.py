@@ -1,14 +1,72 @@
 import io
+import re
 import os
 import csv
 import telebot
-import openai
 import pymysql.cursors
 import traceback
 from telebot import apihelper
 import pytz as ptz
+from natasha import Doc, MorphVocab, Segmenter, NewsMorphTagger, NewsEmbedding
 from datetime import datetime as dt
 from data import config
+
+
+class Porter:
+    PERFECTIVEGROUND = re.compile(u"((ив|ивши|ившись|ыв|ывши|ывшись)|((?<=[ая])(в|вши|вшись)))$")
+    REFLEXIVE = re.compile(u"(с[яь])$")
+    ADJECTIVE = re.compile(u"(ее|ие|ые|ое|ими|ыми|ей|ий|ый|ой|ем|им|ым|ом|его|ого|ему|ому|их|ых|ую|юю|ая|яя|ою|ею)$")
+    PARTICIPLE = re.compile(u"((ивш|ывш|ующ)|((?<=[ая])(ем|нн|вш|ющ|щ)))$")
+    VERB = re.compile(
+        u"((ила|ыла|ена|ейте|уйте|ите|или|ыли|ей|уй|ил|ыл|им|ым|ен|ило|ыло|ено|ят|ует|уют|ит|ыт|ены|ить|ыть|ишь|ую|ю)|((?<=[ая])(ла|на|ете|йте|ли|й|л|ем|н|ло|но|ет|ют|ны|ть|ешь|нно)))$")
+    NOUN = re.compile(
+        u"(а|ев|ов|ие|ье|е|иями|ями|ами|еи|ии|и|ией|ей|ой|ий|й|иям|ям|ием|ем|ам|ом|о|у|ах|иях|ях|ы|ь|ию|ью|ю|ия|ья|я)$")
+    RVRE = re.compile(u"^(.*?[аеиоуыэюя])(.*)$")
+    DERIVATIONAL = re.compile(u".*[^аеиоуыэюя]+[аеиоуыэюя].*ость?$")
+    DER = re.compile(u"ость?$")
+    SUPERLATIVE = re.compile(u"(ейше|ейш)$")
+    I = re.compile(u"и$")
+    P = re.compile(u"ь$")
+    NN = re.compile(u"нн$")
+
+    def stem(word):
+        word = word.lower()
+        word = word.replace(u'ё', u'е')
+        m = re.match(Porter.RVRE, word)
+        if m and m.groups():
+            pre = m.group(1)
+            rv = m.group(2)
+            temp = Porter.PERFECTIVEGROUND.sub('', rv, 1)
+            if temp == rv:
+                rv = Porter.REFLEXIVE.sub('', rv, 1)
+                temp = Porter.ADJECTIVE.sub('', rv, 1)
+                if temp != rv:
+                    rv = temp
+                    rv = Porter.PARTICIPLE.sub('', rv, 1)
+                else:
+                    temp = Porter.VERB.sub('', rv, 1)
+                    if temp == rv:
+                        rv = Porter.NOUN.sub('', rv, 1)
+                    else:
+                        rv = temp
+            else:
+                rv = temp
+
+            rv = Porter.I.sub('', rv, 1)
+
+            if re.match(Porter.DERIVATIONAL, rv):
+                rv = Porter.DER.sub('', rv, 1)
+
+            temp = Porter.P.sub('', rv, 1)
+            if temp == rv:
+                rv = Porter.SUPERLATIVE.sub('', rv, 1)
+                rv = Porter.NN.sub(u'н', rv, 1)
+            else:
+                rv = temp
+            word = pre + rv
+        return word
+
+    stem = staticmethod(stem)
 
 
 def read_file(file_name, split_symbol="\n"):
@@ -191,11 +249,21 @@ def gpt_use(text):
         return gpt_use(text)
 
 
-def get_areal(text):
+def get_areal(text, name=""):
     print("get_areal()")
     # text = f"Выдели из текста только ареалы: {text}"
-    text = f"Напиши из текста ареалы произрастания, если в тексте нет ответа, " \
-           f"то дополни информацию самостоятельно. Перечисляй их через запятую: {text}"
+    # text = f"Напиши из текста ареалы произрастания, если в тексте нет ответа, " \
+    #        f"то дополни информацию самостоятельно. Перечисляй их через запятую: {text}"
+    if name:
+        text = f"Напиши из текста ареалы произрастания, если в тексте нет ответа, " \
+               f"то дополни информацию самостоятельно. Если текста после знака ':' нет, " \
+               f"то найди информацию об ареалах произрастания для {name} самостоятельно." \
+               f" Перечисляй их через запятую: {text}"
+    else:
+        text = f"Напиши из текста ареалы произрастания, если в тексте нет ответа, " \
+               f"то дополни информацию самостоятельно. Если текста после знака ':' нет, " \
+               f"то найди информацию самостоятельно." \
+               f" Перечисляй их через запятую: {text}"
     return gpt_use(text)
     # return "None"
 
@@ -434,6 +502,18 @@ def get_info_plant(message):
     flower_dict = get_dict_flowers(f"{data_dir}/db.txt", "\\nfl")
     flowers_soil = {}
     split_text = text.split(", ")
+    # mrvc = MorphVocab()
+    # sgmt = Segmenter()
+    # emb = NewsEmbedding()
+    # nmt = NewsMorphTagger(emb)
+    # doc_list = [Doc(el) for el in split_text]
+
+    # for doc in doc_list:
+    #     doc.segment(sgmt)
+    #     doc.tag_morph(nmt)
+    #     for token in doc.tokens:
+    #         token.lemmatize(mrvc)
+    split_text = [Porter.stem(el) for el in split_text]
     # print(split_text)
     for i in range(len(split_text)):
         for flower_name, value in flower_dict.items():
@@ -448,13 +528,14 @@ def get_info_plant(message):
     sorted_dict = {k: v for k, v in sorted(flowers_soil.items(), key=lambda item: item[1])}
     # top_text = [f"Топ {n} растений по заданным критериям."]
     top_text = f"Топ {n} растений по заданным критериям:"
+    print(get_time())
     for i in range(n):
         # top_text.append(sorted_dict.popitem()[0])
         name = sorted_dict.popitem()[0]
-        top_text = top_text + "\n" + f"{i + 1}." + name + "\n" + get_areal(flower_dict[name].get("Ареал"))
+        top_text = top_text + "\n" + f"{i + 1}." + name + "\n" + get_areal(flower_dict[name].get("Ареал"), name)
 
         # + "\n" + f"{i + 1}. " + sorted_dict.popitem()[0]
-
+    print(get_time())
     # print(top_text)
     bot.send_message(chat_id, top_text)
 
@@ -498,7 +579,7 @@ def get_info_plant(message):
     #             need_info += line.strip()
 
     # bot.send_document(chat_id, open(f"{data_dir}/data.csv", 'rb'))
-    print()
+    # print()
     print()
 
 
